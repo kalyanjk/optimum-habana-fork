@@ -37,7 +37,8 @@ from optimum.habana.checkpoint_utils import (
     write_checkpoints_json,
 )
 from optimum.habana.utils import check_habana_frameworks_version, check_optimum_habana_min_version, set_seed
-
+from optimum.habana.distributed.tp import setup_tensor_parallel_strategy
+from optimum.habana.distributed.init_on_device import OnDevice
 
 def adjust_batch(batch, size):
     curr_size = batch["input_ids"].shape[1]
@@ -223,19 +224,18 @@ def setup_model(args, model_dtype, model_kwargs, logger):
 
     return model
 
-
 def setup_distributed_model(args, model_dtype, model_kwargs, logger):
-    import deepspeed
-
-    logger.info("DeepSpeed is enabled.")
-    deepspeed.init_distributed(dist_backend="hccl")
+    from habana_frameworks.torch.distributed.hccl import initialize_distributed_hpu
+    args.world_size, args.rank, args.local_rank = initialize_distributed_hpu()
+    torch.distributed.init_process_group("hccl", rank=args.rank, world_size=args.world_size)
+    
     config = AutoConfig.from_pretrained(args.model_name_or_path, torch_dtype=model_dtype, **model_kwargs)
     load_to_meta = model_on_meta(config)
 
     if load_to_meta:
         # Construct model with fake meta tensors, later will be replaced on devices during ds-inference ckpt load
-        with deepspeed.OnDevice(dtype=model_dtype, device="meta"):
-            model = AutoModelForCausalLM.from_config(config, torch_dtype=model_dtype)
+        #with OnDevice(dtype=model_dtype, device="meta"):
+        model = AutoModelForCausalLM.from_config(config, torch_dtype=model_dtype)
 
         # Model loaded to meta is managed differently
         checkpoints_json = tempfile.NamedTemporaryFile(suffix=".json", mode="+w")
@@ -257,7 +257,7 @@ def setup_distributed_model(args, model_dtype, model_kwargs, logger):
         )
     else:
         # TODO: revisit placement on CPU when auto-injection is possible
-        with deepspeed.OnDevice(dtype=model_dtype, device="cpu"):
+        with OnDevice(dtype=model_dtype, device="cpu"):
             if args.peft_model is not None:
                 model = peft_model(args, model_dtype, logger, **model_kwargs)
             else:
@@ -266,18 +266,26 @@ def setup_distributed_model(args, model_dtype, model_kwargs, logger):
                 )
     model.eval()
 
-    # Initialize the model
-    ds_inference_kwargs = {"dtype": model_dtype}
-    ds_inference_kwargs["tensor_parallel"] = {"tp_size": args.world_size}
-    ds_inference_kwargs["enable_cuda_graph"] = args.use_hpu_graphs
-    ds_inference_kwargs["injection_policy"] = get_ds_injection_policy(config)
-    if load_to_meta:
-        ds_inference_kwargs["checkpoint"] = checkpoints_json.name
+    # # Initialize the model
+    # ds_inference_kwargs = {"dtype": model_dtype}
+    # ds_inference_kwargs["tensor_parallel"] = {"tp_size": args.world_size}
+    # ds_inference_kwargs["enable_cuda_graph"] = args.use_hpu_graphs
+    # ds_inference_kwargs["injection_policy"] = get_ds_injection_policy(config)
+    # if load_to_meta:
+    #     ds_inference_kwargs["checkpoint"] = checkpoints_json.name
 
-    model = deepspeed.init_inference(model, **ds_inference_kwargs)
-    model = model.module
-    if model.config.model_type in ["llama", "falcon"]:
-        patch_scoped_linear_all_reduce(model)
+    # model = deepspeed.init_inference(model, **ds_inference_kwargs)
+    # model = model.module
+    print(model)
+    group = None
+    if torch.distributed.is_initialized():
+        group = torch.distributed.GroupMember.WORLD        
+    model = setup_tensor_parallel_strategy(model,group)
+    print(model)    
+
+    
+    # if model.config.model_type in ["llama", "falcon"]:
+    #     patch_scoped_linear_all_reduce(model)
 
     if args.quant_config:
         model = setup_quantization(model, args)
@@ -403,8 +411,8 @@ def initialize_model(args, logger):
     setup_device(args)
     set_seed(args.seed)
     get_repo_root(args.model_name_or_path, local_rank=args.local_rank, token=args.token)
-    use_deepspeed = args.world_size > 0
-    if use_deepspeed or args.bf16:
+    use_multicard = args.world_size > 0
+    if use_multicard or args.bf16:
         model_dtype = torch.bfloat16
     else:
         model_dtype = torch.float
@@ -417,7 +425,7 @@ def initialize_model(args, logger):
 
     model = (
         setup_model(args, model_dtype, model_kwargs, logger)
-        if not use_deepspeed
+        if not use_multicard
         else setup_distributed_model(args, model_dtype, model_kwargs, logger)
     )
     tokenizer, model = setup_tokenizer(args, model)
