@@ -7,6 +7,11 @@ import torch.distributed as dist
 import torch.distributed._functional_collectives as funcol
 from torch import nn
 
+#This needs to be fixed
+def disable_compiler(fn):
+    if hasattr(torch, "compiler") and hasattr(torch.nn.Module, "compile"):
+        return torch.compiler.disable(fn)
+    return fn
 
 def apply_colwise_tp(par_mod: nn.Linear, mod: nn.Linear, world_size, rank):
     # Divide the weight matrix along the last dimension.
@@ -72,6 +77,7 @@ for overload in torch.ops._c10d_functional.all_reduce.overloads():
     if other_fn in lowering.lowerings:
         del lowering.lowerings[other_fn]
 
+@disable_compiler
 def _all_reduce(input_: torch.Tensor) -> torch.Tensor:
     """All-reduce the input tensor across model parallel group."""
     world_size = dist.get_world_size()
