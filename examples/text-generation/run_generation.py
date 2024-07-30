@@ -333,6 +333,13 @@ def setup_parser(parser):
         action="store_true",
         help="Whether to load model from hugging face checkpoint.",
     )
+    parser.add_argument(
+        "--parallel_strategy",
+        type=str,
+        choices=["tp", "none"],  # Add other strategies as needed
+        default="none",
+        help="Run multi card with the specified parallel strategy. Choices are 'tp' for Tensor Parallel Strategy or 'none'.",
+    )
 
     args = parser.parse_args()
 

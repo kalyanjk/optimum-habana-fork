@@ -1,11 +1,26 @@
-# mypy: disable-error-code="method-assign,misc"
+# Copyright 2024 The Foundation Model Stack Authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# This file has been modified from its original version.
+# The original version can be found at https://github.com/foundation-model-stack/foundation-model-stack
 
 import torch
 import torch._inductor.ir as ir
 import torch._inductor.lowering as lowering
 import torch.distributed as dist
-import torch.distributed._functional_collectives as funcol
 from torch import nn
+
 
 #This needs to be fixed, Issues can be tracked at - SW-192548
 def disable_compiler(fn):
@@ -17,9 +32,7 @@ def apply_colwise_tp(par_mod: nn.Linear, mod: nn.Linear, world_size, rank):
     # Divide the weight matrix along the last dimension.
     output_size_per_partition = mod.out_features // world_size
     with torch.no_grad():
-        par_mod.weight.copy_(
-            torch.split(mod.weight, output_size_per_partition, dim=0)[rank]
-        )
+        par_mod.weight.copy_(torch.split(mod.weight, output_size_per_partition, dim=0)[rank])
         if par_mod.bias is not None:
             par_mod.bias.copy_(torch.split(mod.bias, output_size_per_partition)[rank])
 
@@ -28,9 +41,7 @@ def apply_rowwise_tp(par_mod: nn.Linear, mod: nn.Linear, world_size, rank):
     # Divide the weight matrix along the last dimension.
     output_size_per_partition = mod.in_features // world_size
     with torch.no_grad():
-        par_mod.weight.copy_(
-            torch.split(mod.weight, output_size_per_partition, dim=1)[rank]
-        )
+        par_mod.weight.copy_(torch.split(mod.weight, output_size_per_partition, dim=1)[rank])
         if par_mod.bias is not None:
             if rank == 0:
                 par_mod.bias.copy_(mod.bias)
@@ -42,9 +53,7 @@ def apply_embedding_tp(par_mod: nn.Embedding, mod: nn.Embedding, world_size, ran
     # Divide the weight matrix along the last dimension.
     output_size_per_partition = mod.embedding_dim // world_size
     with torch.no_grad():
-        par_mod.weight.copy_(
-            torch.split(mod.weight, output_size_per_partition, dim=1)[rank]
-        )
+        par_mod.weight.copy_(torch.split(mod.weight, output_size_per_partition, dim=1)[rank])
 
 
 ## Fixes for PT 2.2 collectives until PT 2.3 is released
@@ -77,6 +86,7 @@ for overload in torch.ops._c10d_functional.all_reduce.overloads():
     if other_fn in lowering.lowerings:
         del lowering.lowerings[other_fn]
 
+
 @disable_compiler
 def _all_reduce(input_: torch.Tensor) -> torch.Tensor:
     """All-reduce the input tensor across model parallel group."""
@@ -86,9 +96,8 @@ def _all_reduce(input_: torch.Tensor) -> torch.Tensor:
         return input_
 
     # Starting PT 2.3, we can go back to funcol.all_reduce
-    return torch.ops._c10d_functional.wait_tensor(
-        torch.ops._c10d_functional.all_reduce(input_, "sum", "default")
-    )
+    return torch.ops._c10d_functional.wait_tensor(torch.ops._c10d_functional.all_reduce(input_, "sum", "default"))
+
 
 class _ReduceFromModelParallelRegion(torch.autograd.Function):
     """All-reduce the input from the model parallel region."""
@@ -104,6 +113,7 @@ class _ReduceFromModelParallelRegion(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         return grad_output
+
 
 def reduce_from_tensor_model_parallel_region(input_):
     return _ReduceFromModelParallelRegion.apply(input_)
