@@ -328,13 +328,6 @@ def setup_parser(parser):
         action="store_true",
         help="Run the inference with dataset for specified --n_iterations(default:5)",
     )
-    parser.add_argument(    
-        "--distributed_strategy",
-        type=str,
-        choices=["tp", "none"],  # Add other strategies as needed
-        default="none",
-        help="Run multi card with the specified distributed strategy. Choices are 'tp' for Tensor Parallel Strategy or 'none'.",
-    )
     parser.add_argument(
         "--load_cp",
         action="store_true",
